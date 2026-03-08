@@ -1,11 +1,9 @@
-"""Weekly research digest: fetches papers from arXiv + HuggingFace, summarizes with Claude."""
-
 import json
-import os
 import re
 import urllib.request
 import urllib.parse
 import xml.etree.ElementTree as ET
+
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -34,7 +32,13 @@ ARXIV_NS = {"atom": "http://www.w3.org/2005/Atom"}
 
 
 def fetch_arxiv_papers(category: str, start_date: str, end_date: str) -> list[dict]:
-    """fetch papers from a single arxiv category within date range."""
+    """
+    fetch papers from a single arxiv category within date range.
+
+    Args:
+        - category: e.g. "cs.IR"
+        - start_date, end_date: in format YYYYMMDDHHNN (e.g. 202401010000 for Jan 1 2024 midnight)
+    """
     query = (
         f"cat:{category} AND submittedDate:[{start_date} TO {end_date}]"
     )
@@ -70,7 +74,12 @@ def fetch_arxiv_papers(category: str, start_date: str, end_date: str) -> list[di
 
 
 def fetch_hf_papers(date_str: str) -> list[dict]:
-    """fetch papers from huggingface daily papers for a given date."""
+    """
+    fetch papers from huggingface daily papers for a given date.
+
+    Args:
+        - date_str: in format YYYY-MM-DD (e.g. 2024-01-01)
+    """
     url = f"{HF_PAPERS_API}?date={date_str}"
     req = urllib.request.Request(url, headers={"User-Agent": "paper-digest/1.0"})
     try:
@@ -100,13 +109,23 @@ def fetch_hf_papers(date_str: str) -> list[dict]:
 
 
 def matches_keywords(paper: dict) -> bool:
-    """check if title or abstract contains any relevant keyword."""
+    """
+    check if title or abstract contains any relevant keyword.
+
+    Args:
+        - paper: dict with keys "title" and "abstract"
+    """
     text = (paper["title"] + " " + paper["abstract"]).lower()
     return any(kw.lower() in text for kw in KEYWORDS)
 
 
 def deduplicate(papers: list[dict]) -> list[dict]:
-    """deduplicate papers by normalized title."""
+    """
+    deduplicate papers by normalized title.
+
+    Args:
+        - papers: list of paper dicts with "title" key
+    """
     seen = set()
     unique = []
     for p in papers:
@@ -118,9 +137,12 @@ def deduplicate(papers: list[dict]) -> list[dict]:
 
 
 def collect_papers() -> list[dict]:
-    """gather papers from all sources, filter, deduplicate, and cap."""
+    """
+    gather papers from all sources, filter, deduplicate, and cap.
+    """
     now = datetime.now(timezone.utc)
     start = now - timedelta(days=LOOKBACK_DAYS)
+
     # arxiv date format for query: YYYYMMDDHHNN
     start_str = start.strftime("%Y%m%d0000")
     end_str = now.strftime("%Y%m%d2359")
@@ -155,7 +177,12 @@ def collect_papers() -> list[dict]:
 
 
 def summarize_with_claude(papers: list[dict]) -> dict:
-    """send papers to claude for clustering and summarization."""
+    """
+    send papers to claude for clustering and summarization.
+
+    Args:
+        - papers: list of dicts with keys "title", "abstract", "authors", "url", "published", "source"
+    """
     now = datetime.now(timezone.utc)
     week_label = now.strftime("%G-W%V")
 
@@ -204,7 +231,7 @@ Papers:
 
     client = anthropic.Anthropic()
     message = client.messages.create(
-        model="claude-opus-4-5-20250514",
+        model="claude-opus-4-6",
         max_tokens=4096,
         messages=[{"role": "user", "content": prompt}],
     )
@@ -214,7 +241,12 @@ Papers:
 
 
 def render_markdown(digest: dict) -> str:
-    """render the claude digest json into a readable markdown file."""
+    """
+    render the claude digest json into a readable markdown file.
+
+    Args:
+    - digest: dict with keys "week", "highlights", "clusters" as returned- from `summarize_with_claude`
+    """
     lines = [f"# Research Digest — {digest['week']}", ""]
 
     # highlights
@@ -246,7 +278,12 @@ def render_markdown(digest: dict) -> str:
 
 
 def write_digest(markdown: str) -> Path:
-    """write digest to digests/YYYY/week-WW/digest.md."""
+    """
+    write digest to digests/YYYY/week-WW/digest.md.
+
+    Args:
+        - markdown: the rendered markdown string to write to file
+    """
     now = datetime.now(timezone.utc)
     year = now.strftime("%G")
     week = now.strftime("%V")
