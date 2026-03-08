@@ -9,26 +9,19 @@ from pathlib import Path
 
 import anthropic
 
-ARXIV_CATEGORIES = ["cs.IR", "cs.LG", "cs.CL"]
-KEYWORDS = [
-    "vector search", "vector database", "approximate nearest neighbor", "ANN",
-    "hybrid search", "SPLADE", "ColBERT", "dense retrieval", "sparse retrieval",
-    "RAG", "retrieval-augmented", "retrieval augmented",
-    "embedding", "embeddings", "sentence embedding",
-    "reranking", "re-ranking", "cross-encoder",
-    "information retrieval", "neural search", "semantic search",
-    "HNSW", "IVF", "quantization", "product quantization",
-    "knowledge graph", "entity linking",
-    "BM25", "learned sparse", "late interaction",
-    "multi-vector", "matryoshka", "binary embedding",
-]
-MAX_ARXIV_RESULTS = 60  # per category, before filter
-MAX_PAPERS_TO_SUMMARIZE = 30  # cap sent to claude
-LOOKBACK_DAYS = 8
-
-ARXIV_API = "http://export.arxiv.org/api/query"
-HF_PAPERS_API = "https://huggingface.co/api/daily_papers"
-ARXIV_NS = {"atom": "http://www.w3.org/2005/Atom"}
+from consts import (
+    ARXIV_API,
+    ARXIV_CATEGORIES,
+    ARXIV_NS,
+    CLAUDE_MAX_TOKENS,
+    CLAUDE_MODEL,
+    DIGEST_OUTPUT_SCHEMA,
+    HF_PAPERS_API,
+    KEYWORDS,
+    LOOKBACK_DAYS,
+    MAX_ARXIV_RESULTS,
+    MAX_PAPERS_TO_SUMMARIZE,
+)
 
 
 def fetch_arxiv_papers(category: str, start_date: str, end_date: str) -> list[dict]:
@@ -183,9 +176,6 @@ def summarize_with_claude(papers: list[dict]) -> dict:
     Args:
         - papers: list of dicts with keys "title", "abstract", "authors", "url", "published", "source"
     """
-    now = datetime.now(timezone.utc)
-    week_label = now.strftime("%G-W%V")
-
     papers_for_prompt = [
         {"title": p["title"], "url": p["url"], "authors": p["authors"][:5],
          "published": p["published"], "source": p["source"], "abstract": p["abstract"][:500]}
@@ -194,50 +184,30 @@ def summarize_with_claude(papers: list[dict]) -> dict:
 
     prompt = f"""You are a research digest curator for engineers working on vector search, information retrieval, and RAG systems (think Qdrant, Pinecone, Weaviate users).
 
-Here are {len(papers_for_prompt)} recent papers. Analyze them and return a JSON object with this exact structure:
-
-{{
-  "week": "{week_label}",
-  "highlights": [
-    {{"title": "...", "url": "...", "reason": "one sentence on why this is a must-read"}}
-  ],
-  "clusters": [
-    {{
-      "theme": "short theme name (e.g. Sparse & Hybrid Retrieval)",
-      "papers": [
-        {{
-          "title": "...",
-          "url": "...",
-          "authors": ["first author", "..."],
-          "published": "YYYY-MM-DD",
-          "source": "arXiv (cs.IR) or HuggingFace",
-          "relevance": 3,
-          "summary": "2-3 sentence summary focusing on what's new and why it matters"
-        }}
-      ]
-    }}
-  ]
-}}
+Here are {len(papers_for_prompt)} recent papers. Analyze them and produce a digest.
 
 Guidelines:
 - Pick 1-2 highlights worth a deep read
 - Group into 3-5 thematic clusters
 - Score relevance 1-3 (3 = directly relevant to vector search / IR practitioners)
 - Drop papers that are not relevant at all
-- Return ONLY valid JSON, no markdown fences, no commentary
 
 Papers:
 {json.dumps(papers_for_prompt, indent=2)}"""
 
     client = anthropic.Anthropic()
     message = client.messages.create(
-        model="claude-opus-4-6",
-        max_tokens=4096,
+        model=CLAUDE_MODEL,
+        max_tokens=CLAUDE_MAX_TOKENS,
         messages=[{"role": "user", "content": prompt}],
+        output_config={
+            "format": {
+                "type": "json_schema",
+                "schema": DIGEST_OUTPUT_SCHEMA,
+            }
+        },
     )
-
-    raw = message.content[0].text.strip()
-    return json.loads(raw)
+    return json.loads(message.content[0].text)
 
 
 def render_markdown(digest: dict) -> str:
