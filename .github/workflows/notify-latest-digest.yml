@@ -1,0 +1,45 @@
+name: Send Latest Digest to Discord
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Find latest digest
+        id: digest
+        run: |
+          DIGEST_PATH=$(find digests -type f -name digest.md | sort | tail -n 1)
+          if [ -z "$DIGEST_PATH" ]; then
+            echo "No digest files found"
+            exit 1
+          fi
+          echo "path=${DIGEST_PATH}" >> "$GITHUB_OUTPUT"
+
+      - name: Notify Discord
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          DIGEST_PATH: ${{ steps.digest.outputs.path }}
+          GITHUB_SERVER_URL: ${{ github.server_url }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_SHA: ${{ github.sha }}
+        run: |
+          if [ -z "$DISCORD_WEBHOOK_URL" ]; then
+            echo "DISCORD_WEBHOOK_URL is not configured"
+            exit 1
+          fi
+          DIGEST_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/blob/${GITHUB_SHA}/${DIGEST_PATH}"
+          python scripts/notify_discord.py \
+            --digest "$DIGEST_PATH" \
+            --digest-url "$DIGEST_URL" \
+            --webhook-url "$DISCORD_WEBHOOK_URL"
