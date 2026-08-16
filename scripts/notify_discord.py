@@ -2,41 +2,69 @@
 
 import argparse
 import json
-import mimetypes
 import re
-import secrets
-import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
 
 MAX_MESSAGE_LENGTH = 1_900
-TITLE_PATTERN = re.compile(r"^### \[(.+?)\]\(")
 
 
-def extract_titles(markdown: str) -> list[str]:
-    """Return paper titles from the rendered digest in display order."""
-    return [match.group(1) for line in markdown.splitlines() if (match := TITLE_PATTERN.match(line))]
+def normalize_webhook_url(webhook_url: str) -> str:
+    """Use Discord's current API hostname for legacy webhook URLs."""
+    parsed = urllib.parse.urlparse(webhook_url)
+    if parsed.hostname != "discordapp.com":
+        return webhook_url
+    return urllib.parse.urlunparse(parsed._replace(netloc="discord.com"))
 
 
-def split_title_messages(week: str, titles: list[str], digest_url: str) -> list[str]:
-    """Split a titles-only digest announcement into Discord-safe messages."""
-    header = f"📚 **Research Digest — {week}**\n\n"
-    footer = f"\n\nFull digest: {digest_url}\n`digest.md` is attached below."
+def digest_blocks(markdown: str) -> list[str]:
+    """Split Markdown into display blocks without breaking paper entries."""
+    blocks = []
+    for section in re.split(r"(?=^## )", markdown.strip(), flags=re.MULTILINE):
+        if not section.startswith("## "):
+            if section.strip():
+                blocks.append(section.strip())
+            continue
+
+        parts = re.split(r"(?=^### )", section, flags=re.MULTILINE)
+        theme = parts[0].strip()
+        if len(parts) == 1:
+            blocks.append(theme)
+            continue
+        for index, paper in enumerate(parts[1:]):
+            paper = re.sub(r"\n---\s*$", "", paper.strip())
+            blocks.append(f"{theme}\n\n{paper}" if index == 0 else paper)
+    return blocks
+
+
+def split_digest_messages(markdown: str, digest_url: str) -> list[str]:
+    """Pack complete digest blocks into Discord-safe Markdown messages."""
+    footer = f"-# [View this digest on GitHub]({digest_url})"
     messages = []
-    current = header
+    current = ""
 
-    for index, title in enumerate(titles, start=1):
-        line = f"{index}. {title}\n"
-        if len(current) + len(line) + len(footer) > MAX_MESSAGE_LENGTH and current != header:
+    for block in digest_blocks(markdown):
+        if len(block) > MAX_MESSAGE_LENGTH:
+            raise ValueError("A digest section is too long to post to Discord without splitting a paper entry.")
+        candidate = f"{current}\n\n{block}".strip()
+        if current and len(candidate) > MAX_MESSAGE_LENGTH:
             messages.append(current.rstrip())
-            current = ""
-        current += line
+            current = block
+        else:
+            current = candidate
 
-    if not titles:
-        current += "No paper titles were found in this digest.\n"
-    messages.append((current + footer).strip())
+    if current:
+        messages.append(current)
+    if not messages:
+        messages.append("# Research Digest\n\nNo digest content was found.")
+
+    if len(messages[-1]) + len(footer) + 2 <= MAX_MESSAGE_LENGTH:
+        messages[-1] = f"{messages[-1]}\n\n{footer}"
+    else:
+        messages.append(footer)
     return messages
 
 
@@ -46,38 +74,30 @@ def post_json(webhook_url: str, payload: dict) -> None:
     request = urllib.request.Request(
         webhook_url,
         data=body,
-        headers={"Content-Type": "application/json"},
+        headers={
+            "Content-Type": "application/json",
+            "User-Agent": "paper-digest/1.0",
+        },
         method="POST",
     )
     with urllib.request.urlopen(request, timeout=30):
         pass
 
 
-def post_attachment(webhook_url: str, content: str, digest_path: Path) -> None:
-    """Post the final Discord message with digest.md attached."""
-    boundary = f"----paper-digest-{secrets.token_hex(16)}"
-    payload = json.dumps({"content": content, "allowed_mentions": {"parse": []}}).encode("utf-8")
-    mime_type = mimetypes.guess_type(digest_path.name)[0] or "text/markdown"
-    body = b"".join([
-        f"--{boundary}\r\n".encode(),
-        b'Content-Disposition: form-data; name="payload_json"\r\n',
-        b"Content-Type: application/json\r\n\r\n",
-        payload,
-        b"\r\n",
-        f'--{boundary}\r\nContent-Disposition: form-data; name="files[0]"; filename="{digest_path.name}"\r\n'.encode(),
-        f"Content-Type: {mime_type}\r\n\r\n".encode(),
-        digest_path.read_bytes(),
-        b"\r\n",
-        f"--{boundary}--\r\n".encode(),
-    ])
-    request = urllib.request.Request(
-        webhook_url,
-        data=body,
-        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
-        method="POST",
-    )
-    with urllib.request.urlopen(request, timeout=30):
-        pass
+def format_discord_error(error: urllib.error.HTTPError) -> str:
+    """Return Discord's structured error details without exposing response data."""
+    try:
+        payload = json.loads(error.read().decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return "Discord did not provide a structured error message."
+
+    message = payload.get("message")
+    code = payload.get("code")
+    if isinstance(message, str) and isinstance(code, int):
+        return f"Discord said: {message} (code {code})."
+    if isinstance(message, str):
+        return f"Discord said: {message}."
+    return "Discord did not provide a structured error message."
 
 
 def main() -> None:
@@ -89,24 +109,23 @@ def main() -> None:
     args = parser.parse_args()
 
     markdown = args.digest.read_text(encoding="utf-8")
-    first_line = markdown.splitlines()[0] if markdown else ""
-    week = first_line.removeprefix("# Research Digest — ").strip() or "Latest"
-    messages = split_title_messages(week, extract_titles(markdown), args.digest_url)
+    webhook_url = normalize_webhook_url(args.webhook_url)
+    messages = split_digest_messages(markdown, args.digest_url)
 
     if args.dry_run:
-        print(f"would send {len(messages)} Discord message(s) and attach {args.digest.name}")
+        print(f"would send {len(messages)} Discord digest message(s)")
         return
 
     try:
-        for message in messages[:-1]:
-            post_json(args.webhook_url, {"content": message, "allowed_mentions": {"parse": []}})
-        post_attachment(args.webhook_url, messages[-1], args.digest)
+        for message in messages:
+            post_json(webhook_url, {"content": message, "allowed_mentions": {"parse": []}})
     except urllib.error.HTTPError as error:
-        raise SystemExit(f"Discord webhook rejected the notification (HTTP {error.code}).") from error
+        details = format_discord_error(error)
+        raise SystemExit(f"Discord webhook rejected the notification (HTTP {error.code}). {details}") from error
     except urllib.error.URLError as error:
         raise SystemExit("Could not reach the Discord webhook.") from error
 
-    print(f"sent {len(messages)} Discord message(s) and attached {args.digest.name}")
+    print(f"sent {len(messages)} Discord digest message(s)")
 
 
 if __name__ == "__main__":
