@@ -27,14 +27,39 @@ jobs:
         run: python scripts/digest.py
 
       - name: Commit and push
+        id: commit
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add digests/
           if git diff --cached --quiet; then
             echo "No changes to commit"
+            echo "digest_changed=false" >> "$GITHUB_OUTPUT"
           else
             WEEK=$(date -u +"%G-W%V")
+            DIGEST_PATH="digests/$(date -u +"%G")/week-$(date -u +"%V")/digest.md"
             git commit -m "digest: ${WEEK}"
             git push
+            echo "digest_changed=true" >> "$GITHUB_OUTPUT"
+            echo "digest_path=${DIGEST_PATH}" >> "$GITHUB_OUTPUT"
+            echo "commit_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Notify Discord
+        if: steps.commit.outputs.digest_changed == 'true'
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          DIGEST_PATH: ${{ steps.commit.outputs.digest_path }}
+          DIGEST_COMMIT_SHA: ${{ steps.commit.outputs.commit_sha }}
+          GITHUB_SERVER_URL: ${{ github.server_url }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          if [ -z "$DISCORD_WEBHOOK_URL" ]; then
+            echo "DISCORD_WEBHOOK_URL is not configured; skipping Discord notification"
+            exit 0
+          fi
+          DIGEST_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/blob/${DIGEST_COMMIT_SHA}/${DIGEST_PATH}"
+          python scripts/notify_discord.py \
+            --digest "$DIGEST_PATH" \
+            --digest-url "$DIGEST_URL" \
+            --webhook-url "$DISCORD_WEBHOOK_URL"

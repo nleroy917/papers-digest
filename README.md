@@ -12,6 +12,10 @@ A GitHub Actions workflow runs every Monday, fetches recent papers, filters by r
 
 Digests are written to `digests/YYYY/week-WW/digest.md`.
 
+## Discord notifications
+
+To post each newly published digest to a Discord channel, create a channel webhook and add its URL as the `DISCORD_WEBHOOK_URL` repository secret. The weekly workflow then posts every paper title, links to the committed Markdown file on GitHub, and attaches `digest.md` for reading directly in Discord. If the secret is absent, digest generation and publishing continue without a notification.
+
 ## Run locally
 
 ```bash
