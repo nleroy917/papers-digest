@@ -23,6 +23,7 @@ def normalize_webhook_url(webhook_url: str) -> str:
 
 def digest_blocks(markdown: str) -> list[str]:
     """Split Markdown into display blocks without breaking paper entries."""
+    markdown = re.sub(r"^# .+\n*", "", markdown.strip(), count=1)
     blocks = []
     for section in re.split(r"(?=^## )", markdown.strip(), flags=re.MULTILINE):
         if not section.startswith("## "):
@@ -69,8 +70,8 @@ def split_digest_messages(markdown: str, digest_url: str) -> list[str]:
     return messages
 
 
-def post_json(webhook_url: str, payload: dict) -> None:
-    """Post a JSON Discord webhook message and raise on a failed response."""
+def post_json(webhook_url: str, payload: dict) -> dict:
+    """Post a JSON Discord webhook message and return its response when present."""
     payload = {**payload, "flags": payload.get("flags", 0) | SUPPRESS_EMBEDS}
     body = json.dumps(payload).encode("utf-8")
     request = urllib.request.Request(
@@ -82,8 +83,42 @@ def post_json(webhook_url: str, payload: dict) -> None:
         },
         method="POST",
     )
-    with urllib.request.urlopen(request, timeout=30):
-        pass
+    with urllib.request.urlopen(request, timeout=30) as response:
+        response_body = response.read()
+    return json.loads(response_body) if response_body else {}
+
+
+def with_query_params(url: str, **params: str) -> str:
+    """Return a webhook URL with query parameters added or replaced."""
+    parsed = urllib.parse.urlparse(url)
+    query = dict(urllib.parse.parse_qsl(parsed.query))
+    query.update(params)
+    return urllib.parse.urlunparse(parsed._replace(query=urllib.parse.urlencode(query)))
+
+
+def digest_thread_title(markdown: str) -> str:
+    """Derive the Forum post title from the digest heading."""
+    first_line = markdown.splitlines()[0] if markdown else ""
+    return first_line.removeprefix("# ").strip() or "Research Digest"
+
+
+def post_forum_digest(webhook_url: str, title: str, messages: list[str]) -> None:
+    """Create a Forum post, then send all digest messages into its thread."""
+    first_response = post_json(
+        with_query_params(webhook_url, wait="true"),
+        {
+            "content": messages[0],
+            "thread_name": title,
+            "allowed_mentions": {"parse": []},
+        },
+    )
+    thread_id = first_response.get("channel_id")
+    if not thread_id:
+        raise RuntimeError("Discord did not return the Forum thread ID.")
+
+    thread_url = with_query_params(webhook_url, thread_id=str(thread_id))
+    for message in messages[1:]:
+        post_json(thread_url, {"content": message, "allowed_mentions": {"parse": []}})
 
 
 def format_discord_error(error: urllib.error.HTTPError) -> str:
@@ -113,21 +148,23 @@ def main() -> None:
     markdown = args.digest.read_text(encoding="utf-8")
     webhook_url = normalize_webhook_url(args.webhook_url)
     messages = split_digest_messages(markdown, args.digest_url)
+    thread_title = digest_thread_title(markdown)
 
     if args.dry_run:
-        print(f"would send {len(messages)} Discord digest message(s)")
+        print(f"would create the Forum post '{thread_title}' with {len(messages)} Discord digest message(s)")
         return
 
     try:
-        for message in messages:
-            post_json(webhook_url, {"content": message, "allowed_mentions": {"parse": []}})
+        post_forum_digest(webhook_url, thread_title, messages)
     except urllib.error.HTTPError as error:
         details = format_discord_error(error)
         raise SystemExit(f"Discord webhook rejected the notification (HTTP {error.code}). {details}") from error
     except urllib.error.URLError as error:
         raise SystemExit("Could not reach the Discord webhook.") from error
+    except RuntimeError as error:
+        raise SystemExit(f"Discord Forum notification failed. {error}") from error
 
-    print(f"sent {len(messages)} Discord digest message(s)")
+    print(f"created Forum post '{thread_title}' with {len(messages)} Discord digest message(s)")
 
 
 if __name__ == "__main__":

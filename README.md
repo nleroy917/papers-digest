@@ -14,7 +14,7 @@ Digests are written to `digests/YYYY/week-WW/digest.md`.
 
 ## Discord notifications
 
-To post each newly published digest to a Discord channel, create a channel webhook and add its URL as the `DISCORD_WEBHOOK_URL` repository secret. The weekly workflow renders the full digest as native Discord Markdown, with clickable paper titles and a GitHub link as a fallback. If the secret is absent, digest generation and publishing continue without a notification.
+To post each newly published digest to a Discord Forum channel, create a channel webhook and add its URL as the `DISCORD_WEBHOOK_URL` repository secret. The weekly workflow creates one Forum post per digest, renders the full digest as native Discord Markdown inside it, and includes clickable paper titles and a GitHub link as a fallback. If the secret is absent, digest generation and publishing continue without a notification.
 
 To test a notification without generating a new digest, run **Send Latest Digest to Discord** from the Actions tab. It sends the newest committed digest without changing the repository.
 
