@@ -10,6 +10,7 @@ from pathlib import Path
 
 
 MAX_MESSAGE_LENGTH = 1_900
+SUPPRESS_EMBEDS = 1 << 2
 
 
 def normalize_webhook_url(webhook_url: str) -> str:
@@ -70,6 +71,7 @@ def split_digest_messages(markdown: str, digest_url: str) -> list[str]:
 
 def post_json(webhook_url: str, payload: dict) -> None:
     """Post a JSON Discord webhook message and raise on a failed response."""
+    payload = {**payload, "flags": payload.get("flags", 0) | SUPPRESS_EMBEDS}
     body = json.dumps(payload).encode("utf-8")
     request = urllib.request.Request(
         webhook_url,
